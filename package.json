@@ -1,0 +1,13 @@
+{
+  "name": "gmap-country-industry-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Google Maps country and industry research worker with website contact enrichment",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node worker.mjs",
+    "research": "node country-industry-research.mjs",
+    "test": "node --test gmap.test.mjs gmap-industry.test.mjs country-industry-research.test.mjs country-industry-job.test.mjs"
+  }
+}
