@@ -125,11 +125,21 @@ async function connect() {
 
   let id = 0;
   const pending = new Map();
+  const listRequests = new Map(), listBodies = [], bodyReads = new Set();
   ws.onmessage = (m) => {
     const msg = JSON.parse(m.data);
     if (msg.id && pending.has(msg.id)) {
       pending.get(msg.id)(msg);
       pending.delete(msg.id);
+    }
+    if (msg.method === 'Network.responseReceived') {
+      const u=msg.params?.response?.url || '';
+      try { const parsed=new URL(u); if(parsed.pathname==='/search' && parsed.searchParams.get('tbm')==='map') listRequests.set(msg.params.requestId,u); } catch {}
+    }
+    if (msg.method === 'Network.loadingFinished' && listRequests.has(msg.params.requestId)) {
+      const requestId=msg.params.requestId, url=listRequests.get(requestId); listRequests.delete(requestId);
+      const task=cdp('Network.getResponseBody',{requestId}).then(r=>{if(r.result?.body)listBodies.push({url,body:r.result.base64Encoded?Buffer.from(r.result.body,'base64').toString('utf8'):r.result.body});}).catch(()=>{});
+      bodyReads.add(task);task.finally(()=>bodyReads.delete(task));
     }
   };
   const cdp = (method, params = {}) =>
@@ -145,7 +155,55 @@ async function connect() {
     }
     return r.result?.result?.value;
   };
-  return { ws, cdp, evaluate };
+  return { ws, cdp, evaluate, listBodies, async waitForBodies(){await Promise.allSettled([...bodyReads]);} };
+}
+
+// Google Maps list responses use nested positional arrays (field mapping based on
+// gosom/google-maps-scraper, MIT). Treat unexpected formats as incomplete data.
+export function parseMapsList(text) {
+  const body=String(text).replace(/^\)\]}'[^\n]*\n/, '');
+  const data=JSON.parse(body), items=data?.[0]?.[1];
+  if(!Array.isArray(items)) throw new Error('Unexpected Maps list response');
+  const rows=[];
+  for(const item of items.slice(1)) {
+    const b=item?.[14]; if(!Array.isArray(b)||typeof b[11]!=='string'||!b[11].trim())continue;
+    const id=typeof b[78]==='string'?b[78]:null;
+    rows.push({name:b[11],category:b[13]?.[0]||null,address:Array.isArray(b[2])?b[2].filter(x=>typeof x==='string').join(', ')||null:null,phone:b[178]?.[0]?.[0]||null,website:b[7]?.[0]||null,rating:typeof b[4]?.[7]==='number'?b[4][7]:null,reviews:typeof b[4]?.[8]==='number'?b[4][8]:null,latitude:typeof b[9]?.[2]==='number'?b[9][2]:null,longitude:typeof b[9]?.[3]==='number'?b[9][3]:null,place_id:id,mapsUrl:id?'https://www.google.com/maps/place/?q=place_id:'+encodeURIComponent(id):null});
+  }
+  return rows;
+}
+// Independently page the list endpoint while Chrome reads its own ranked feed.
+// Preserve already collected rows on refusals and expose an explicit cooldown.
+export async function fetchMapsPages(query, max, options={}) {
+  const pageSize=20, rows=[], fetchPage=options.fetchPage||fetch, delay=options.delay||sleep;
+  const pages=Math.min(15,Math.ceil(max/pageSize));
+  for(let page=0;page<pages;page++){
+    const offset=page*pageSize;
+    const pb='!4m12!1m3!1d3826.902183192154!2d101.6869!3d3.139!2m3!1f0!2f0!3f0!3m2!1i600!2i800!4f15.0!7i20!8i'+offset+'!10b1!12m22!1m3!18b1!30b1!34e1!2m3!5m1!6e2!20e3!4b0!10b1!12b1!13b1!16b1!17m1!3e1!20m3!5e2!6b1!14b1!46m1!1b0!96b1!19m4!2m3!1i360!2i120!4i8';
+    const url=new URL('https://www.google.com/search');
+    for(const [key,value] of Object.entries({tbm:'map',authuser:'0',hl:'en',q:query,pb}))url.searchParams.set(key,value);
+    if(/\bmalaysia\b/i.test(query))url.searchParams.set('gl','my');
+    try {
+      const response=await fetchPage(url,{headers:{'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36','accept-language':'en'},signal:AbortSignal.timeout(30000)});
+      const text=await response.text();
+      if(response.status===403||response.status===429||/unusual traffic|\/sorry\/|recaptcha/i.test(text))return {rows,pages:page,blocked:true,error:'Google refused list requests (HTTP '+response.status+')',retryAfterMs:1800000};
+      if(!response.ok)throw new Error('HTTP '+response.status);
+      const batch=parseMapsList(text);rows.push(...batch);
+      if(batch.length<pageSize)return {rows,pages:page+1,blocked:false,error:null};
+      if(page+1<pages)await delay(500);
+    }catch(error){return {rows,pages:page,blocked:false,error:String(error.message||error)};}
+  }
+  return {rows,pages,blocked:false,error:null};
+}
+function placeId(row){return row.place_id||/!19s([^!?#&]+)/.exec(row.mapsUrl||'')?.[1]||null;}
+export function mergeMapsRows(feed, extra) {
+  const rows=feed.map(b=>({...b})), byId=new Map();
+  for(const row of rows){const id=placeId(row);if(id){row.place_id=id;byId.set(id,row);}}
+  for(const entry of extra){const id=placeId(entry);const old=id&&byId.get(id);if(old){
+    for(const field of ['address','reviews','latitude','longitude','place_id'])if(entry[field]!=null&&entry[field]!=='')old[field]=entry[field];
+    for(const field of ['category','phone','website','rating','mapsUrl'])if((old[field]==null||old[field]==='')&&entry[field]!=null)old[field]=entry[field];
+  }else if(entry.name){const row={...entry};rows.push(row);if(id)byId.set(id,row);}}
+  return rows;
 }
 
 /**
@@ -420,7 +478,7 @@ export async function scan(payload, job = null) {
   const max = Number(payload?.max) > 0 ? Number(payload.max) : 200;
   const query = [keyword, place].filter(Boolean).join(' ');
 
-  const profile = path.join(os.tmpdir(), 'gmap-worker-profile');
+  const profile = process.env.GMAP_PROFILE_DIR || path.join(os.tmpdir(), 'gmap-worker-profile');
   const chrome = launchChrome(profile);
   const startedAt = Date.now();
   let ws = null;
@@ -442,9 +500,18 @@ export async function scan(payload, job = null) {
       /* non-fatal if Network domain is unavailable */
     }
 
+    const listPromise = keyword && place ? fetchMapsPages(keyword+' in '+place,max) : Promise.resolve({rows:[],pages:0,blocked:false,error:null});
     let { page, scrolls } = await harvest(conn, MAPS + encodeURIComponent(query) + '?hl=en', max);
     let businesses = page.businesses.filter((b) => b.name);
     let categories = null;
+    let listPages=0;
+    const paginated=await listPromise;
+    if (keyword && page.feedPresent && !page.signals?.captcha && !page.signals?.consent) {
+      await conn.waitForBodies();
+      const extra=[];
+      for(const response of conn.listBodies){try{extra.push(...parseMapsList(response.body));listPages++;}catch{}}
+      businesses=mergeMapsRows(businesses,[...extra,...paginated.rows]);
+    }
 
     // A keyword specific enough to name one business is not a search either:
     // Maps redirects to that place's card and there is no feed to read. This is
@@ -499,6 +566,11 @@ export async function scan(payload, job = null) {
       businesses,
       ...classify(page, businesses, max),
       categories,
+      listPages,
+      paginatedPages:paginated.pages,
+      paginatedFound:paginated.rows.length,
+      listError:paginated.error,
+      ...(paginated.blocked?{retryAfterMs:paginated.retryAfterMs}:{}),
       scrolls,
       tookMs: Date.now() - startedAt,
       at: new Date().toISOString(),

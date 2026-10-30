@@ -494,7 +494,7 @@ async function run(name, job, session, group) {
     } : undefined;
     const result = await handler(payload, job, {onProgress});
     if (onProgress) await progressPending;
-    await report(name, job.id, true, result, null);
+    await report(name, job.id, true, result, null, job.type === 'gmap.scan' ? result?.retryAfterMs : null);
     // A scan that ran fine but did not persist is the one failure that is
     // invisible from here: the caller gets its rows and the job says done. The
     // usual cause is the pg-proxy token having expired overnight, so it is

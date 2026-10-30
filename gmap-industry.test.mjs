@@ -16,3 +16,7 @@ test('keeps distinct places with the same name and excludes blocked results', ()
   assert.notEqual(businessKey(a),businessKey(b));
   assert.equal(mergeResults([{businesses:[a,b]},{blocked:true,businesses:[{name:'blocked'}]}]).length,2);
 });
+test('deduplicates explicit place IDs with feed URLs',()=>{
+  const feed={name:'Agency',mapsUrl:'https://google.com/maps/place/a/data=!19sChIJ123'};
+  assert.equal(businessKey(feed),businessKey({name:'Agency',place_id:'ChIJ123'}));
+});

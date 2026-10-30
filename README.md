@@ -37,3 +37,9 @@ npm test
 ```
 
 The tests include a local simulated hub handshake and do not run a nationwide Maps search.
+
+## Mac mini Maps scans
+
+For keyword-and-place scans, the scanner combines the Chrome feed with paginated Maps list responses. It merges rows by place ID, keeps feed website values when available, and fills full addresses, coordinates, and review counts from list data. The requested maximum still caps the returned rows. `paginatedFound`, `paginatedPages`, and `listError` describe the additional list-page pass; a Google refusal preserves the rows already fetched and requests a 30-minute worker cooldown. If the list request fails, the feed remains available and the error is reported. List response fields are undocumented and can change; coverage and the relevance of results are not guaranteed.
+
+The Mac mini's existing `macmini.mjs` service uses `gmap.mjs` for `gmap.scan`; updating a separate checkout alone does not update that running service.

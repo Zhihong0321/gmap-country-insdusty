@@ -21,6 +21,7 @@ export const WEST_MALAYSIA = [
 // Match identical Google place links first. Do not merge different branches just
 // because they share a registered company name.
 export function businessKey(b) {
+  if (b.place_id) return 'place:' + b.place_id;
   const url = b.mapsUrl || '';
   const id = /!19s([^!?#&]+)/.exec(url)?.[1] || /!1s([^!?#&]+)/.exec(url)?.[1];
   if (id) return 'place:' + decodeURIComponent(id);

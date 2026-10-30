@@ -102,3 +102,20 @@ test('the suffix test does not fire on a word that merely ends in one', () => {
   assert.equal(isRegisteredName('Ali Shopping Centre Sdn. Bhd.'), true);
   assert.equal(isRegisteredName('Verdant Solar Holdings Berhad'), true);
 });
+
+test('parses Maps list fields and merges them with feed cards by place ID', async () => {
+  const {parseMapsList,mergeMapsRows}=await import('./gmap.mjs');
+  const b=[];b[11]='Example';b[13]=['Agency'];b[2]=['Street','80000 Johor Bahru'];b[4]=[];b[4][7]=4.9;b[4][8]=12;b[9]=[null,null,1.4,103.7];b[78]='ChIJtest';b[178]=[['0123456789']];b[7]=['https://example.com'];
+  const entry=[];entry[14]=b;const data=[null];data[0]=[null,[null,entry]];
+  const list=parseMapsList(")]}'\n"+JSON.stringify(data));assert.equal(list.length,1);assert.equal(list[0].reviews,12);assert.equal(list[0].address,'Street, 80000 Johor Bahru');
+  const merged=mergeMapsRows([{name:'Example',website:'https://feed.example',mapsUrl:'https://google.com/maps/place/x/data=!19sChIJtest'}],list);
+  assert.equal(merged.length,1);assert.equal(merged[0].website,'https://feed.example');assert.equal(merged[0].place_id,'ChIJtest');assert.equal(merged[0].reviews,12);
+  assert.throws(()=>parseMapsList('{}'),/Unexpected/);
+});
+
+test('list pagination preserves rows on refusal and requests a cooldown', async () => {
+  const {fetchMapsPages}=await import('./gmap.mjs');
+  const b=[];b[11]='Agency';b[78]='ChIJtest';const item=[];item[14]=b;const d=[[null,[null,...Array(20).fill(item)]]];
+  let calls=0;const result=await fetchMapsPages('agency in Malaysia',200,{delay:async()=>{},fetchPage:async()=>{calls++;return calls===1?{ok:true,status:200,text:async()=>")]}'\n"+JSON.stringify(d)}:{ok:false,status:429,text:async()=>''}}});
+  assert.equal(result.rows.length,20);assert.equal(result.blocked,true);assert.equal(result.retryAfterMs,1800000);assert.equal(calls,2);
+});
